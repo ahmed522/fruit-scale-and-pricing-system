@@ -1,3 +1,254 @@
+<<<<<<< HEAD
+/******************************************************************************
+ *
+ * HX711 library for AVR ATmega328P - Implementation
+ * With Proteus simulation support
+ * Optimized for 1MHz clock frequency
+ *
+ ******************************************************************************/
+
+#include "hx711.h"
+
+/*---------------------------------------------------------------------------------
+ * STATIC VARIABLES
+ *---------------------------------------------------------------------------------*/
+static uint8 g_gain = 1;            // Gain pulses (1=128, 3=64, 2=32)
+static sint32 g_offset = 0;         // Tare offset
+static double g_scale = 1.0;        // Scale factor
+static uint8 g_gainValue = 128;     // Actual gain value for getgain()
+
+
+/*---------------------------------------------------------------------------------
+ * PRIVATE MACROS (for real hardware)
+ *---------------------------------------------------------------------------------*/
+#define HX711_SCK_HIGH()    SET_BIT(HX711_SCK_PORT, HX711_SCK_PINNUM)
+#define HX711_SCK_LOW()     CLEAR_BIT(HX711_SCK_PORT, HX711_SCK_PINNUM)
+#define HX711_DOUT_READ()   ((HX711_DOUT_PIN >> HX711_DOUT_PINNUM) & 0x01)
+#define HX711_PULSE_DELAY_US 2
+
+
+/*---------------------------------------------------------------------------------
+ * PRIVATE FUNCTIONS (for real hardware)
+ *---------------------------------------------------------------------------------*/
+static uint8 shiftIn_MSB(void)
+{
+    uint8 value = 0;
+    uint8 i;
+
+    for(i = 0; i < 8; i++)
+    {
+        HX711_SCK_HIGH();
+        _delay_us(HX711_PULSE_DELAY_US);
+        value |= (HX711_DOUT_READ() << (7 - i));
+        HX711_SCK_LOW();
+        _delay_us(HX711_PULSE_DELAY_US);
+    }
+
+    return value;
+}
+
+/*---------------------------------------------------------------------------------
+ * PUBLIC FUNCTION IMPLEMENTATIONS
+ *---------------------------------------------------------------------------------*/
+
+/*---------------------------------------------------------------------------------*/
+void hx711_init(uint8 gain, double scale, sint32 offset)
+{
+    /* Store scale and offset */
+    g_scale = scale;
+    g_offset = offset;
+
+    /* Set gain */
+    switch(gain)
+    {
+        case HX711_GAINCHANNELA128:
+            g_gain = 1;
+            g_gainValue = 128;
+            break;
+        case HX711_GAINCHANNELA64:
+            g_gain = 3;
+            g_gainValue = 64;
+            break;
+        case HX711_GAINCHANNELB32:
+            g_gain = 2;
+            g_gainValue = 32;
+            break;
+        default:
+            g_gain = 1;
+            g_gainValue = 128;
+            break;
+    }
+
+    /* Configure hardware pins */
+    SET_BIT(HX711_SCK_DDR, HX711_SCK_PINNUM);
+    HX711_SCK_LOW();
+
+    CLEAR_BIT(HX711_DOUT_DDR, HX711_DOUT_PINNUM);
+    SET_BIT(HX711_DOUT_PORT, HX711_DOUT_PINNUM);
+
+    _delay_ms(200);
+
+}
+
+/*---------------------------------------------------------------------------------*/
+uint8 hx711_isready(void)
+{
+    return (HX711_DOUT_READ() == 0) ? 1 : 0;
+
+}
+
+/*---------------------------------------------------------------------------------*/
+sint32 hx711_read(void)
+{
+    uint8 data[3] = {0, 0, 0};
+    uint8 filler = 0x00;
+    uint32 value = 0;
+    uint8 i;
+
+    /* Wait for ready */
+    while(!hx711_isready())
+    {
+        _delay_us(10);
+    }
+
+    /* Disable interrupts */
+    cli();
+
+    /* Read 24 bits */
+    data[2] = shiftIn_MSB();
+    data[1] = shiftIn_MSB();
+    data[0] = shiftIn_MSB();
+
+    /* Set gain for next reading */
+    for(i = 0; i < g_gain; i++)
+    {
+        HX711_SCK_HIGH();
+        _delay_us(HX711_PULSE_DELAY_US);
+        HX711_SCK_LOW();
+        _delay_us(HX711_PULSE_DELAY_US);
+    }
+
+    /* Re-enable interrupts */
+    sei();
+
+    /* Sign extension */
+    if(data[2] & 0x80) {
+        filler = 0xFF;
+    }
+
+    /* Construct 32-bit value */
+    value = ((uint32)filler << 24) |
+            ((uint32)data[2] << 16) |
+            ((uint32)data[1] << 8) |
+            ((uint32)data[0]);
+
+    return (sint32)value;
+
+}
+
+/*---------------------------------------------------------------------------------*/
+sint32 hx711_readaverage(uint8 times)
+{
+    sint64 sum = 0;
+    uint8 i;
+
+    for(i = 0; i < times; i++)
+    {
+        sum += (sint64)hx711_read();
+        _delay_ms(5);
+    }
+
+    return (sint32)(sum / times);
+}
+
+/*---------------------------------------------------------------------------------*/
+double hx711_getweight(void)
+{
+    sint32 raw = hx711_readaverage(1);
+    double weight = (double)(raw - g_offset) / g_scale;
+
+    /* Ensure non-negative */
+    if(weight < 0.0) {
+        weight = 0.0;
+    }
+
+    return weight;
+}
+
+/*---------------------------------------------------------------------------------*/
+void hx711_calibrate1setoffset(void)
+{
+    /* Tare - set offset to current average reading */
+    g_offset = hx711_readaverage(10);
+
+}
+
+/*---------------------------------------------------------------------------------*/
+void hx711_calibrate2setscale(double knownWeight)
+{
+    /* Calculate scale factor based on known weight */
+    sint32 rawValue = hx711_readaverage(10);
+    g_scale = (double)(rawValue - g_offset) / knownWeight;
+
+
+}
+
+/*---------------------------------------------------------------------------------*/
+void hx711_taretozero(void)
+{
+    /* Same as calibrate1setoffset */
+    hx711_calibrate1setoffset();
+}
+
+/*---------------------------------------------------------------------------------*/
+void hx711_setscale(double scale)
+{
+    g_scale = scale;
+}
+
+/*---------------------------------------------------------------------------------*/
+double hx711_getscale(void)
+{
+    return g_scale;
+}
+
+/*---------------------------------------------------------------------------------*/
+void hx711_setoffset(sint32 offset)
+{
+    g_offset = offset;
+
+
+}
+
+/*---------------------------------------------------------------------------------*/
+sint32 hx711_getoffset(void)
+{
+    return g_offset;
+}
+
+/*---------------------------------------------------------------------------------*/
+uint8 hx711_getgain(void)
+{
+    return g_gainValue;
+}
+
+/*---------------------------------------------------------------------------------*/
+void hx711_powerdown(void)
+{
+    HX711_SCK_LOW();
+    _delay_us(2);
+    HX711_SCK_HIGH();
+    _delay_us(70);
+}
+
+/*---------------------------------------------------------------------------------*/
+void hx711_powerup(void)
+{
+    HX711_SCK_LOW();
+    _delay_us(2);
+
+}
+=======
 /******************************************************************************
  * HX711 library for AVR ATmega328P - Implementation
  * With optional Proteus / software simulation support
@@ -477,3 +728,4 @@ void hx711_stopSimulationPattern(void)
     g_simTicksMs        = 0;
     g_simulationEnabled = 0;
 }
+>>>>>>> edc6387c1d585a5baaf460e549f88eece77f0548
